@@ -1,95 +1,170 @@
+#include <array>
 #include <condition_variable>
 #include <fstream>
 #include <iostream>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
-#include <atomic>
 
-constexpr size_t BUFFER_SIZE = 8;
-std::vector<char> buffer(BUFFER_SIZE);
-size_t chunk_size = 0;
-
-bool ready = false;
-bool processed = false;
-
-std::mutex mtx;
-std::condition_variable cv;
-
-std::atomic<int> error_code{0}; // 0 = OK, 1 = reader error, 2 = writer error
-
-void reader(const std::string &src)
+enum class CopyResult
 {
-    std::ifstream in(src, std::ios::binary);
-    if (!in)
-    {
-        std::cerr << "Error: cannot open source file" << std::endl;
-        std::unique_lock<std::mutex> lk(mtx);
-        processed = true;
-        ready = true;
-        error_code = 1;
-        lk.unlock();
-        cv.notify_one();
-        return;
-    }
+    Ok = 0,
+    SourceOpenFailed = 1,
+    TargetOpenFailed = 2,
+    TargetExists = 3,
+    InvalidArguments = 4
+};
 
-    while (!processed)
-    {
-        std::unique_lock<std::mutex> lk(mtx);
-        cv.wait(lk, []
-                { return !ready; });
-        in.read(buffer.data(), buffer.size());
-        chunk_size = in.gcount();
-        ready = true;
-        if (chunk_size == 0)
-            processed = true;
-        lk.unlock();
-        cv.notify_one();
-    }
-}
-
-void writer(const std::string &dest)
+class CopyTool
 {
-    std::ofstream out(dest, std::ios::binary);
-    if (!out)
+public:
+    CopyTool(const std::string &src, const std::string &dest, bool overwrite = false)
+        : src_path(src), dest_path(dest), overwrite_target(overwrite)
     {
-        std::cerr << "Error: cannot open target file" << std::endl;
-        std::unique_lock<std::mutex> lk(mtx);
-        processed = true;
-        ready = true;
-        error_code = 2;
-        lk.unlock();
-        cv.notify_one();
-        return;
+        for (auto &slot : slots)
+            slot.resize(kSlotSize);
     }
 
-    while (!processed)
+    int copy()
     {
-        std::unique_lock<std::mutex> lk(mtx);
-        cv.wait(lk, []
-                { return ready; });
-        if (chunk_size > 0)
-            out.write(buffer.data(), chunk_size);
-        ready = false;
-        lk.unlock();
-        cv.notify_one();
+        const CopyResult status = init();
+        if (status != CopyResult::Ok)
+            return static_cast<int>(status);
+
+        std::thread t_reader(&CopyTool::read, this);
+        std::thread t_writer(&CopyTool::write, this);
+        t_reader.join();
+        t_writer.join();
+        return static_cast<int>(CopyResult::Ok);
     }
-}
+
+private:
+    static constexpr size_t kSlotSize = 8;
+    static constexpr size_t kSlotCount = 4;
+
+    std::string src_path;
+    std::string dest_path;
+    bool overwrite_target{false};
+
+    std::ifstream src_file;
+    std::ofstream dest_file;
+
+    std::array<std::vector<char>, kSlotCount> slots{};
+    std::array<size_t, kSlotCount> slot_sizes{};
+    std::array<bool, kSlotCount> slot_ready{};
+    size_t read_index{0};
+    size_t write_index{0};
+
+    std::mutex mtx;
+    std::condition_variable reader_cv;
+    std::condition_variable writer_cv;
+
+    CopyResult init()
+    {
+        if (!open_source(src_path))
+            return CopyResult::SourceOpenFailed;
+        if (!overwrite_target && target_exists(dest_path))
+            return CopyResult::TargetExists;
+        if (!open_target(dest_path))
+            return CopyResult::TargetOpenFailed;
+        return CopyResult::Ok;
+    }
+
+    bool open_source(const std::string &src)
+    {
+        src_file.open(src, std::ios::binary);
+        if (!src_file)
+        {
+            std::cerr << "Error: cannot open source file" << std::endl;
+            return false;
+        }
+        return true;
+    }
+
+    bool target_exists(const std::string &dest) const
+    {
+        if (std::filesystem::exists(dest))
+        {
+            std::cerr << "Error: target file already exists (overwrite disabled)" << std::endl;
+            return true;
+        }
+        return false;
+    }
+
+    bool open_target(const std::string &dest)
+    {
+        dest_file.open(dest, std::ios::binary | std::ios::trunc);
+        if (!dest_file)
+        {
+            std::cerr << "Error: cannot open target file" << std::endl;
+            return false;
+        }
+        return true;
+    }
+
+    void read()
+    {
+        while (true)
+        {
+            {
+                std::unique_lock<std::mutex> lk(mtx);
+                reader_cv.wait(lk, [this]
+                               { return !slot_ready[read_index]; });
+            }
+
+            src_file.read(slots[read_index].data(), slots[read_index].size());
+            const size_t bytes_read = static_cast<size_t>(src_file.gcount());
+
+            {
+                std::unique_lock<std::mutex> lk(mtx);
+                slot_sizes[read_index] = bytes_read;
+                slot_ready[read_index] = true;
+                writer_cv.notify_one();
+                if (bytes_read == 0)
+                    break;
+                read_index = (read_index + 1) % kSlotCount;
+            }
+        }
+    }
+
+    void write()
+    {
+        while (true)
+        {
+            size_t bytes_write;
+            {
+                std::unique_lock<std::mutex> lk(mtx);
+                writer_cv.wait(lk, [this]
+                               { return slot_ready[write_index]; });
+                bytes_write = slot_sizes[write_index];
+            }
+
+            if (bytes_write > 0)
+                dest_file.write(slots[write_index].data(), static_cast<std::streamsize>(bytes_write));
+
+            {
+                std::unique_lock<std::mutex> lk(mtx);
+                slot_ready[write_index] = false;
+                reader_cv.notify_one();
+                if (bytes_write == 0)
+                    break;
+                write_index = (write_index + 1) % kSlotCount;
+            }
+        }
+    }
+};
 
 int main(int argc, char *argv[])
 {
     if (argc != 3)
     {
         std::cout << "Usage: copytool <source> <target>" << std::endl;
-        return 1;
+        return static_cast<int>(CopyResult::InvalidArguments);
     }
 
-    std::thread t_reader(reader, argv[1]);
-    std::thread t_writer(writer, argv[2]);
-
-    t_reader.join();
-    t_writer.join();
-
-    return error_code;
+    CopyTool tool(argv[1], argv[2]);
+    return tool.copy();
 }
+

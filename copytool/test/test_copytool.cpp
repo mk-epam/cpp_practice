@@ -45,15 +45,45 @@ TEST_F(CopyToolTest, ReaderError)
     files_to_remove.push_back(out_file);
 }
 
-// TEST_F(CopyToolTest, WriterErrorInvalidPath)
-// {
-//     std::string in_file = "test_writer_error_in.txt";
-//     std::string out_file = "non_existent_dir/test_writer_error_out.txt";
-//     create_file(in_file, "data");
-//     int ret = std::system(("copytool.exe " + in_file + " " + out_file).c_str());
-//     EXPECT_EQ(ret, 2); // 2 = writer error
-//     // No need to remove out_file, it won't exist
-// }
+TEST_F(CopyToolTest, WriterErrorInvalidPath)
+{
+    std::string in_file = "test_writer_error_in.txt";
+    std::string out_file = "non_existent_dir/test_writer_error_out.txt";
+    create_file(in_file, "data");
+    int ret = std::system(("copytool.exe " + in_file + " " + out_file).c_str());
+    EXPECT_EQ(ret, 2); // 2 = writer error
+    // No need to remove out_file, it won't exist
+}
+
+TEST_F(CopyToolTest, TargetFileExists)
+{
+    std::string in_file = "test_exists_in.txt";
+    std::string out_file = "test_exists_out.txt";
+    create_file(in_file, "data");
+    create_file(out_file, "existing");
+    int ret = std::system(("copytool.exe " + in_file + " " + out_file).c_str());
+    EXPECT_EQ(ret, 3); // 3 = target file exists
+    files_to_remove.push_back(out_file);
+}
+
+TEST_F(CopyToolTest, SourceEqualsDestination)
+{
+    std::string file = "test_same_file.txt";
+    create_file(file, "original content");
+    int ret = std::system(("copytool.exe " + file + " " + file).c_str());
+    EXPECT_EQ(ret, 3); // 3 = target file exists (overwrite disabled)
+    EXPECT_EQ(read_file(file), "original content");
+}
+
+TEST_F(CopyToolTest, InvalidArguments)
+{
+    int ret = std::system("copytool.exe");
+    EXPECT_EQ(ret, 4); // 4 = invalid arguments
+    ret = std::system("copytool.exe only_one_arg.txt");
+    EXPECT_EQ(ret, 4); // 4 = invalid arguments
+    ret = std::system("copytool.exe a.txt b.txt c.txt");
+    EXPECT_EQ(ret, 4); // 4 = invalid arguments
+}
 
 TEST_F(CopyToolTest, EmptyFile)
 {

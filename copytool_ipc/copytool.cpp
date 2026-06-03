@@ -53,14 +53,15 @@ private:
         try
         {
             SharedSegment segment(shm_name, true);
-            SharedControl *shared = segment.get();
+            SharedChannel channel = segment.channel();
 
-            const CopyResult status = init_reader(shared);
+            const CopyResult status = init_reader();
+            channel.signal_reader_init(static_cast<int>(status));
             if (status != CopyResult::Ok)
                 return static_cast<int>(status);
 
-            reader_loop(shared);
-            wait_for_writer(shared);
+            reader_loop(channel);
+            channel.wait_for_writer_finished();
             return static_cast<int>(CopyResult::Ok);
         }
         catch (const boost::interprocess::interprocess_exception &ex)
@@ -75,17 +76,20 @@ private:
         try
         {
             SharedSegment segment(shm_name, false);
-            SharedControl *shared = segment.get();
+            SharedChannel channel = segment.channel();
 
-            const int init_code = wait_for_reader_init(shared);
+            const int init_code = channel.wait_for_reader_init();
             if (init_code != static_cast<int>(CopyResult::Ok))
                 return init_code;
 
-            const CopyResult status = init_writer(shared);
+            const CopyResult status = init_writer();
             if (status != CopyResult::Ok)
+            {
+                channel.signal_writer_finished();
                 return static_cast<int>(status);
+            }
 
-            writer_loop(shared);
+            writer_loop(channel);
             return static_cast<int>(CopyResult::Ok);
         }
         catch (const boost::interprocess::interprocess_exception &ex)
@@ -95,53 +99,20 @@ private:
         }
     }
 
-    CopyResult init_reader(SharedControl *shared)
+    CopyResult init_reader()
     {
-        CopyResult status = CopyResult::Ok;
-
         if (!open_source(src_path))
-            status = CopyResult::SourceOpenFailed;
-
-        boost::interprocess::scoped_lock<boost::interprocess::interprocess_mutex> lock(shared->mutex);
-        shared->reader_status = static_cast<int>(status);
-        shared->reader_ready = true;
-        shared->writer_cv.notify_one();
-
-        return status;
+            return CopyResult::SourceOpenFailed;
+        return CopyResult::Ok;
     }
 
-    CopyResult init_writer(SharedControl *shared)
+    CopyResult init_writer()
     {
-        CopyResult status = CopyResult::Ok;
-
         if (!overwrite_target && target_exists(dest_path))
-            status = CopyResult::TargetExists;
-        else if (!open_target(dest_path))
-            status = CopyResult::TargetOpenFailed;
-
-        if (status != CopyResult::Ok)
-        {
-            boost::interprocess::scoped_lock<boost::interprocess::interprocess_mutex> lock(shared->mutex);
-            shared->writer_finished = true;
-            shared->reader_cv.notify_one();
-        }
-
-        return status;
-    }
-
-    int wait_for_reader_init(SharedControl *shared)
-    {
-        boost::interprocess::scoped_lock<boost::interprocess::interprocess_mutex> lock(shared->mutex);
-        shared->writer_cv.wait(lock, [shared]
-                               { return shared->reader_ready; });
-        return shared->reader_status;
-    }
-
-    void wait_for_writer(SharedControl *shared)
-    {
-        boost::interprocess::scoped_lock<boost::interprocess::interprocess_mutex> lock(shared->mutex);
-        shared->reader_cv.wait(lock, [shared]
-                               { return shared->writer_finished; });
+            return CopyResult::TargetExists;
+        if (!open_target(dest_path))
+            return CopyResult::TargetOpenFailed;
+        return CopyResult::Ok;
     }
 
     bool open_source(const std::string &src)
@@ -176,63 +147,23 @@ private:
         return true;
     }
 
-    void reader_loop(SharedControl *shared)
+    void reader_loop(SharedChannel &channel)
     {
-        while (true)
+        SharedChannel::Slot slot;
+        do
         {
-            {
-                boost::interprocess::scoped_lock<boost::interprocess::interprocess_mutex> lock(shared->mutex);
-                shared->reader_cv.wait(lock, [shared]
-                                       { return !shared->slot_ready[shared->read_index] || shared->writer_finished; });
-                if (shared->writer_finished)
-                    break;
-            }
-
-            src_file.read(shared->slots[shared->read_index].data(), SharedControl::kSlotSize);
-            const size_t bytes_read = static_cast<size_t>(src_file.gcount());
-
-            {
-                boost::interprocess::scoped_lock<boost::interprocess::interprocess_mutex> lock(shared->mutex);
-                shared->slot_sizes[shared->read_index] = bytes_read;
-                shared->slot_ready[shared->read_index] = true;
-                shared->writer_cv.notify_one();
-                if (bytes_read == 0)
-                    break;
-                shared->read_index = (shared->read_index + 1) % SharedControl::kSlotCount;
-            }
-        }
+            src_file.read(slot.data.data(), slot.data.size());
+            slot.size = static_cast<size_t>(src_file.gcount());
+        } while (channel.push(slot));
     }
 
-    void writer_loop(SharedControl *shared)
+    void writer_loop(SharedChannel &channel)
     {
-        while (true)
+        SharedChannel::Slot slot;
+        while (channel.pop(slot))
         {
-            size_t bytes_write = 0;
-            {
-                boost::interprocess::scoped_lock<boost::interprocess::interprocess_mutex> lock(shared->mutex);
-                shared->writer_cv.wait(lock, [shared]
-                                       { return shared->slot_ready[shared->write_index]; });
-                bytes_write = shared->slot_sizes[shared->write_index];
-            }
-
-            if (bytes_write > 0)
-            {
-                dest_file.write(shared->slots[shared->write_index].data(),
-                                static_cast<std::streamsize>(bytes_write));
-            }
-
-            {
-                boost::interprocess::scoped_lock<boost::interprocess::interprocess_mutex> lock(shared->mutex);
-                shared->slot_ready[shared->write_index] = false;
-                if (bytes_write == 0)
-                {
-                    shared->writer_finished = true;
-                    shared->reader_cv.notify_one();
-                    break;
-                }
-                shared->reader_cv.notify_one();
-                shared->write_index = (shared->write_index + 1) % SharedControl::kSlotCount;
-            }
+            dest_file.write(slot.data.data(),
+                            static_cast<std::streamsize>(slot.size));
         }
     }
 };

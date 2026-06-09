@@ -7,6 +7,21 @@
 
 #include <windows.h>
 
+namespace
+{
+constexpr const char *kCopyToolExe = "build\\copytool.exe";
+
+std::string copytool_command(const std::string &args = "")
+{
+    std::string command = "\"";
+    command += kCopyToolExe;
+    command += "\"";
+    if (!args.empty())
+        command += " " + args;
+    return command;
+}
+}
+
 class CopyToolTest : public ::testing::Test
 {
 protected:
@@ -47,7 +62,7 @@ protected:
                                const std::string &shm_name)
     {
         const std::string command =
-            "copytool.exe " + in_file + " " + out_file + " " + shm_name;
+            copytool_command(in_file + " " + out_file + " " + shm_name);
 
         STARTUPINFOA reader_startup{};
         PROCESS_INFORMATION reader_process{};
@@ -149,20 +164,20 @@ TEST_F(CopyToolTest, SharedMemoryFailed)
     std::string out_file = "test_shared_memory_failed_out.txt";
     remove_file(in_file);
     remove_file(out_file);
-    const int ret = std::system(("copytool.exe " + in_file + " " + out_file + " bad\\name").c_str());
+    const int ret = std::system(copytool_command(in_file + " " + out_file + " bad\\name").c_str());
     EXPECT_EQ(ret, 5);
     files_to_remove.push_back(out_file);
 }
 
 TEST_F(CopyToolTest, InvalidArguments)
 {
-    int ret = std::system("copytool.exe");
+    int ret = std::system(copytool_command().c_str());
     EXPECT_EQ(ret, 4);
-    ret = std::system("copytool.exe only_one_arg.txt");
+    ret = std::system(copytool_command("only_one_arg.txt").c_str());
     EXPECT_EQ(ret, 4);
-    ret = std::system("copytool.exe a.txt b.txt");
+    ret = std::system(copytool_command("a.txt b.txt").c_str());
     EXPECT_EQ(ret, 4);
-    ret = std::system("copytool.exe a.txt b.txt c.txt d.txt");
+    ret = std::system(copytool_command("a.txt b.txt c.txt d.txt").c_str());
     EXPECT_EQ(ret, 4);
 }
 

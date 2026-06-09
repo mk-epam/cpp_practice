@@ -1,20 +1,39 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall
-TARGET = copytool
-SRC = copytool.cpp
-HEADERS = shared_segment.hpp
+CXXFLAGS = -std=c++17 -Wall -Isrc
+BUILD_DIR = build
+TARGET = $(BUILD_DIR)/copytool
+TEST_RUNNER = $(BUILD_DIR)/test_runner
+SRC = \
+      src/Main.cpp \
+      src/CopyTool.cpp \
+      src/Role.cpp \
+      src/ReaderSharedChannel.cpp \
+      src/WriterSharedChannel.cpp \
+      src/SharedSegment.cpp
+HEADERS = \
+      src/Slot.hpp \
+      src/SharedControl.hpp \
+      src/ReaderSharedChannel.hpp \
+      src/WriterSharedChannel.hpp \
+      src/SharedSegment.hpp \
+      src/CopyResult.hpp \
+      src/Role.hpp \
+      src/CopyTool.hpp
 GTEST_LIB = -lgtest -lgtest_main -lpthread
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) $(HEADERS)
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+$(TARGET): $(SRC) $(HEADERS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $(TARGET) $(SRC)
 
-test: $(TARGET) test/test_copytool.cpp
-	$(CXX) $(CXXFLAGS) test/test_copytool.cpp -o test_runner $(GTEST_LIB)
+test: $(TARGET) test/test_copytool.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) test/test_copytool.cpp -o $(TEST_RUNNER) $(GTEST_LIB)
 
 run_test: test
-	./test_runner
+	./$(TEST_RUNNER)
 
 clean:
-	rm -f $(TARGET) test_runner
+	rm -rf $(BUILD_DIR)

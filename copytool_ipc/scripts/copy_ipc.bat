@@ -1,9 +1,10 @@
 @echo off
+set "TOOL=%~dp0..\build\copytool.exe"
 if "%~3"=="" (
     echo Usage: copy_ipc.bat ^<source^> ^<target^> ^<shared_memory_name^>
     exit /b 4
 )
-start "" /B copytool.exe %1 %2 %3
+start "" /B "%TOOL%" %1 %2 %3
 timeout /t 1 /nobreak >nul
-copytool.exe %1 %2 %3
+"%TOOL%" %1 %2 %3
 exit /b %ERRORLEVEL%

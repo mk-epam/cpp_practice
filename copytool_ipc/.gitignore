@@ -1,0 +1,5 @@
+build/
+*.exe
+*.o
+*.7z
+*.zip
